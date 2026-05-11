@@ -8,6 +8,8 @@ import time
 import tkinter as tk
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
+from typing import Any
 
 try:
     from PIL import Image, ImageTk, ImageEnhance
@@ -242,7 +244,7 @@ class LidarMapApp:
         self.root.bind("l", lambda _event: self.adjust_front_angle(5.0))
         self.stop_event: threading.Event | None = None
         self.logo_image_path = args.logo_file
-        self.logo_image: Image.Image | None = None
+        self.logo_image: Any = None
         self.logo_image_tk: tk.PhotoImage | None = None
         self.logo_render_cache: tuple[int, int, tk.PhotoImage] | None = None
         self._load_logo_image()
@@ -500,7 +502,7 @@ class LidarMapApp:
         else:
             self.canvas.create_image(width / 2, height / 2, image=self.logo_image_tk, anchor=tk.CENTER)
 
-    def _prepare_logo_for_background(self, image: Image.Image) -> Image.Image:
+    def _prepare_logo_for_background(self, image: Any) -> Any:
         dark_background = Image.new("RGBA", image.size, (8, 10, 14, 255))
         faded = Image.blend(dark_background, image, alpha=0.10)
         if ImageEnhance is not None:
