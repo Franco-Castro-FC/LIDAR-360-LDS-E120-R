@@ -10,6 +10,13 @@ from dataclasses import dataclass
 from pathlib import Path
 
 try:
+    from PIL import Image, ImageTk, ImageEnhance
+except ImportError:
+    Image = None  # type: ignore[assignment]
+    ImageTk = None  # type: ignore[assignment]
+    ImageEnhance = None  # type: ignore[assignment]
+
+try:
     import serial
     from serial import SerialException
 except ImportError:
@@ -209,7 +216,7 @@ class LidarMapApp:
         self.root.minsize(780, 560)
 
         self.status_var = tk.StringVar(value="Inicializando...")
-        self.canvas = tk.Canvas(root, bg="#101418", highlightthickness=0)
+        self.canvas = tk.Canvas(root, bg="#070b10", highlightthickness=0)
         self.status = tk.Label(
             root,
             textvariable=self.status_var,
@@ -234,6 +241,11 @@ class LidarMapApp:
         self.root.bind("j", lambda _event: self.adjust_front_angle(-5.0))
         self.root.bind("l", lambda _event: self.adjust_front_angle(5.0))
         self.stop_event: threading.Event | None = None
+        self.logo_image_path = args.logo_file
+        self.logo_image: Image.Image | None = None
+        self.logo_image_tk: tk.PhotoImage | None = None
+        self.logo_render_cache: tuple[int, int, tk.PhotoImage] | None = None
+        self._load_logo_image()
         self.draw()
 
     def attach_stop_event(self, stop_event: threading.Event) -> None:
@@ -253,6 +265,8 @@ class LidarMapApp:
         points, status = self.state.snapshot()
 
         self.canvas.delete("all")
+        self._draw_scan_backdrop(width, height)
+        self._draw_background_logo(width, height)
         self._draw_grid(width, height)
         self._draw_points(width, height, points)
         self._draw_robot(width, height)
@@ -267,6 +281,21 @@ class LidarMapApp:
         scale = radius_px / self.args.range_mm
         return center_x, center_y, scale
 
+    def _draw_scan_backdrop(self, width: int, height: int) -> None:
+        self.canvas.create_rectangle(0, 0, width, height, fill="#05080f", outline="")
+        center_x, center_y, scale = self._center_and_scale(width, height)
+        max_radius = self.args.range_mm * scale
+        field_width = min(width * 0.80, max_radius * 1.65)
+        field_height = min(height * 0.70, max_radius * 1.35)
+        left = center_x - field_width / 2.0
+        right = center_x + field_width / 2.0
+        top = center_y - field_height / 2.0
+        bottom = center_y + field_height / 2.0
+
+        self.canvas.create_rectangle(left, top, right, bottom, fill="#0b1219", outline="")
+        for x in range(round(left), round(right) + 1, 4):
+            self.canvas.create_line(x, top, x, bottom, fill="#1f2d35", dash=(1, 3))
+
     def _draw_grid(self, width: int, height: int) -> None:
         center_x, center_y, scale = self._center_and_scale(width, height)
         max_radius = self.args.range_mm * scale
@@ -276,7 +305,7 @@ class LidarMapApp:
             center_y - max_radius,
             center_x + max_radius,
             center_y + max_radius,
-            outline="#2d3742",
+            outline="#344352",
             width=2,
         )
 
@@ -288,25 +317,25 @@ class LidarMapApp:
                 center_y - radius,
                 center_x + radius,
                 center_y + radius,
-                outline="#27313a",
+                outline="#25323d",
             )
             self.canvas.create_text(
                 center_x + 6,
                 center_y - radius - 2,
                 text=f"{distance // 1000}m",
-                fill="#74808c",
+                fill="#7f8c96",
                 anchor="w",
                 font=("Segoe UI", 8),
             )
 
-        self.canvas.create_line(center_x, center_y - max_radius, center_x, center_y + max_radius, fill="#27313a")
-        self.canvas.create_line(center_x - max_radius, center_y, center_x + max_radius, center_y, fill="#27313a")
-        self.canvas.create_line(center_x, center_y, center_x, center_y - max_radius, fill="#3b4a55", dash=(4, 4))
+        self.canvas.create_line(center_x, center_y - max_radius, center_x, center_y + max_radius, fill="#2b3944")
+        self.canvas.create_line(center_x - max_radius, center_y, center_x + max_radius, center_y, fill="#2b3944")
+        self.canvas.create_line(center_x, center_y, center_x, center_y - max_radius, fill="#435462", dash=(4, 4))
         self.canvas.create_text(
             center_x,
             center_y - max_radius - 14,
             text="0 deg datos",
-            fill="#74808c",
+            fill="#7f8c96",
             font=("Segoe UI", 9),
         )
         front_x, front_y = self._polar_to_canvas(
@@ -315,7 +344,7 @@ class LidarMapApp:
             self.args.front_angle,
             max_radius,
         )
-        self.canvas.create_line(center_x, center_y, front_x, front_y, fill="#55c2ff", width=3, arrow=tk.LAST)
+        self.canvas.create_line(center_x, center_y, front_x, front_y, fill="#4cc7ff", width=3, arrow=tk.LAST)
         label_x, label_y = self._polar_to_canvas(
             center_x,
             center_y,
@@ -333,21 +362,21 @@ class LidarMapApp:
             center_x,
             center_y + max_radius + 14,
             text="180 deg",
-            fill="#74808c",
+            fill="#7f8c96",
             font=("Segoe UI", 9),
         )
         self.canvas.create_text(
             center_x + max_radius + 28,
             center_y,
             text="90",
-            fill="#74808c",
+            fill="#7f8c96",
             font=("Segoe UI", 9),
         )
         self.canvas.create_text(
             center_x - max_radius - 28,
             center_y,
             text="270",
-            fill="#74808c",
+            fill="#7f8c96",
             font=("Segoe UI", 9),
         )
 
@@ -412,6 +441,73 @@ class LidarMapApp:
             return "#f3e85b"
         return "#5ee0a0"
 
+    def _load_logo_image(self) -> None:
+        if self.logo_image_path is None:
+            return
+
+        try:
+            if Image is not None and ImageTk is not None:
+                self.logo_image = Image.open(self.logo_image_path).convert("RGBA")
+                self.logo_image_tk = None
+            else:
+                self.logo_image_tk = tk.PhotoImage(file=str(self.logo_image_path))
+        except Exception as exc:
+            self.state.set_error(f"No se pudo cargar logo: {exc}")
+            self.logo_image = None
+            self.logo_image_tk = None
+
+    def _draw_background_logo(self, width: int, height: int) -> None:
+        if self.logo_image_path is None:
+            return
+        if width < 64 or height < 64:
+            return
+
+        if self.logo_image is not None and Image is not None and ImageTk is not None:
+            cached = self.logo_render_cache
+            if cached is not None and cached[0] == width and cached[1] == height:
+                self.canvas.create_image(width / 2, height / 2, image=cached[2], anchor=tk.CENTER)
+                return
+
+            img = self.logo_image
+            max_width = int(width * 0.55)
+            max_height = int(height * 0.55)
+            image_ratio = img.width / img.height
+            if max_width / max_height > image_ratio:
+                new_height = max_height
+                new_width = round(image_ratio * max_height)
+            else:
+                new_width = max_width
+                new_height = round(max_width / image_ratio)
+
+            resampling = getattr(getattr(Image, "Resampling", Image), "LANCZOS")
+            logo_image = img.resize((new_width, new_height), resampling).convert("RGBA")
+
+            if ImageEnhance is not None:
+                logo_image = ImageEnhance.Brightness(logo_image).enhance(0.70)
+                logo_image = ImageEnhance.Color(logo_image).enhance(0.75)
+
+            alpha_mask = logo_image.split()[3].point(lambda p: int(p * 0.35))
+            logo_image.putalpha(alpha_mask)
+
+            background = Image.new("RGBA", (width, height), (6, 8, 14, 255))
+            paste_x = (width - new_width) // 2
+            paste_y = (height - new_height) // 2
+            background.paste(logo_image, (paste_x, paste_y), logo_image)
+
+            self.logo_image_tk = ImageTk.PhotoImage(background)
+            self.logo_render_cache = (width, height, self.logo_image_tk)
+            self.canvas.create_image(width / 2, height / 2, image=self.logo_image_tk, anchor=tk.CENTER)
+        else:
+            self.canvas.create_image(width / 2, height / 2, image=self.logo_image_tk, anchor=tk.CENTER)
+
+    def _prepare_logo_for_background(self, image: Image.Image) -> Image.Image:
+        dark_background = Image.new("RGBA", image.size, (8, 10, 14, 255))
+        faded = Image.blend(dark_background, image, alpha=0.10)
+        if ImageEnhance is not None:
+            faded = ImageEnhance.Brightness(faded).enhance(0.18)
+            faded = ImageEnhance.Color(faded).enhance(0.65)
+        return faded
+
     def _update_status(self, status: dict[str, object]) -> None:
         if status["error"]:
             self.status_var.set(str(status["error"]))
@@ -466,6 +562,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=6000,
         help="Radio donde se dibujan retornos invalidos o sin distancia.",
+    )
+    parser.add_argument(
+        "--logo-file",
+        type=Path,
+        default=Path(__file__).resolve().with_name("logo.png"),
+        help="Ruta al archivo de logo PNG que se muestra de fondo.",
     )
     parser.add_argument(
         "--replay-bytes-per-second",
